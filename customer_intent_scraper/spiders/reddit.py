@@ -1,78 +1,93 @@
 import scrapy
-from datetime import datetime
-from scrapy_playwright.page import PageMethod
+from datetime import datetime, timezone
+
 
 class RedditSpider(scrapy.Spider):
     name = "reddit"
-    allowed_domains = ["reddit.com"]
-    
+
+    # Override settings for this spider:
+    # - Bypass Playwright (settings.py routes all https through it, which Reddit's
+    #   bot detection blocks). Use Scrapy's native HTTP client instead.
+    # - Disable robots.txt (Reddit's robots.txt blocks crawlers, but the JSON API
+    #   is their intended programmatic access path).
+    custom_settings = {
+        "ROBOTSTXT_OBEY": False,
+        "DOWNLOAD_HANDLERS": {
+            "http": "scrapy.core.downloader.handlers.http.HTTPDownloadHandler",
+            "https": "scrapy.core.downloader.handlers.http11.HTTP11DownloadHandler",
+        },
+    }
+
     def __init__(self, subreddits="microsoft,microsoft365", limit=50, *args, **kwargs):
-        super(RedditSpider, self).__init__(*args, **kwargs)
-        self.subreddits = subreddits.split(',')
+        super().__init__(*args, **kwargs)
+        self.subreddits = [s.strip() for s in subreddits.split(",")]
         self.limit = int(limit)
 
     def start_requests(self):
         for subreddit in self.subreddits:
-            url = f"https://www.reddit.com/r/{subreddit}/new/"
+            url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
             yield scrapy.Request(
                 url=url,
                 callback=self.parse,
-                meta={
-                    "playwright": True,
-                    "playwright_include_page": True,
-                    "playwright_page_methods": [
-                        PageMethod("wait_for_selector", "shreddit-post"),
-                    ],
-                },
-                cb_kwargs={"subreddit": subreddit}
+                headers={"User-Agent": "python:customer_intent_scraper:v1.0 (research/non-commercial)"},
+                cb_kwargs={"subreddit": subreddit, "collected": 0},
             )
 
-    async def parse(self, response, subreddit):
-        page = response.meta["playwright_page"]
-        
-        # Scroll to load more posts
-        # We scroll a few times to trigger lazy loading
-        # Each scroll waits a bit for content to populate
-        for _ in range(5):
-            await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(2000) 
-            
-        content = await page.content()
-        await page.close()
-        
-        selector = scrapy.Selector(text=content)
-        posts = selector.css("shreddit-post")
-        
-        self.logger.info(f"Found {len(posts)} posts for subreddit {subreddit}")
-        
-        for post in posts[:self.limit]:
-            # Extract attributes from the custom element
-            title = post.attrib.get("post-title")
-            author = post.attrib.get("author")
-            score = post.attrib.get("score")
-            comment_count = post.attrib.get("comment-count")
-            permalink = post.attrib.get("permalink")
-            created_timestamp = post.attrib.get("created-timestamp")
-            post_id = post.attrib.get("id")
-            
-            # Extract content from the text-body slot
-            post_content = post.css("[slot='text-body'] ::text").getall()
-            post_content = " ".join(post_content).strip() if post_content else ""
+    def parse(self, response, subreddit, collected):
+        try:
+            data = response.json()
+        except Exception as e:
+            self.logger.error(f"Failed to parse JSON for r/{subreddit}: {e}")
+            return
 
-            discussion_url = f"https://www.reddit.com{permalink}"
-            
-            item = {
+        posts = data.get("data", {}).get("children", [])
+        after = data.get("data", {}).get("after")
+
+        self.logger.info(f"r/{subreddit}: got {len(posts)} posts (collected so far: {collected})")
+
+        for post_wrapper in posts:
+            if collected >= self.limit:
+                return
+
+            post = post_wrapper.get("data", {})
+            post_id = post.get("name") or post.get("id")
+            title = post.get("title", "")
+            author = post.get("author", "")
+            score = post.get("score", 0)
+            num_comments = post.get("num_comments", 0)
+            permalink = post.get("permalink", "")
+            selftext = post.get("selftext", "")
+            created_utc = post.get("created_utc")
+
+            # Convert Unix timestamp to ISO format
+            if created_utc:
+                publish_date = datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat()
+            else:
+                publish_date = None
+
+            discussion_url = f"https://www.reddit.com{permalink}" if permalink else ""
+
+            yield {
                 "message_id": post_id,
                 "title": title,
                 "discussion_url": discussion_url,
                 "author": author,
-                "reply_count": int(comment_count) if comment_count else 0,
-                "thumbs_up_count": int(score) if score else 0,
-                "content": post_content,
-                "publish_date": created_timestamp, 
-                "replies": [], # Deep scraping skipped for no-API version
+                "reply_count": num_comments,
+                "thumbs_up_count": score,
+                "content": selftext,
+                "publish_date": publish_date,
+                "replies": [],
                 "platform": "Reddit",
-                "sub_source": subreddit
+                "sub_source": subreddit,
             }
-            
-            yield item
+            collected += 1
+
+        # Paginate if we haven't hit the limit and there are more posts
+        if after and collected < self.limit:
+            next_url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100&after={after}"
+            yield scrapy.Request(
+                url=next_url,
+                callback=self.parse,
+                headers={"User-Agent": "python:customer_intent_scraper:v1.0 (research/non-commercial)"},
+                cb_kwargs={"subreddit": subreddit, "collected": collected},
+            )

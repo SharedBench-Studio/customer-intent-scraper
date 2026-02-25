@@ -1,136 +1,158 @@
-import praw
-import sqlite3
-import os
+"""
+Reddit scraper using the public JSON API (no credentials required).
+Writes directly to discussions.db, same schema as the Scrapy pipeline.
+
+Usage:
+    python scrape_reddit.py --subreddits microsoft,microsoft365 --limit 50
+"""
+
 import argparse
-from datetime import datetime
-from dotenv import load_dotenv
+import sqlite3
+import time
+from datetime import datetime, timezone
 
-# Load environment variables
-load_dotenv()
+import requests
 
-class RedditScraper:
-    def __init__(self, client_id, client_secret, user_agent, db_name="discussions.db"):
-        self.reddit = praw.Reddit(
-            client_id=client_id,
-            client_secret=client_secret,
-            user_agent=user_agent
+HEADERS = {"User-Agent": "python:customer_intent_scraper:v1.0 (research/non-commercial)"}
+DB_NAME = "discussions.db"
+
+
+def ensure_tables(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discussions (
+            id TEXT PRIMARY KEY,
+            source_id TEXT,
+            platform TEXT,
+            sub_source TEXT,
+            title TEXT,
+            author TEXT,
+            publish_date TEXT,
+            content TEXT,
+            url TEXT,
+            reply_count INTEGER,
+            thumbs_up_count INTEGER,
+            scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        self.db_name = db_name
-        self.conn = sqlite3.connect(self.db_name)
-        self.cursor = self.conn.cursor()
-        self.ensure_tables()
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS replies (
+            id TEXT PRIMARY KEY,
+            parent_id TEXT,
+            author TEXT,
+            publish_date TEXT,
+            content TEXT,
+            thumbs_up_count INTEGER,
+            FOREIGN KEY(parent_id) REFERENCES discussions(id)
+        )
+    """)
+    conn.commit()
 
-    def ensure_tables(self):
-        # Same schema as the Scrapy pipeline
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS discussions (
-                id TEXT PRIMARY KEY,
-                source_id TEXT,
-                platform TEXT,
-                sub_source TEXT,
-                title TEXT,
-                author TEXT,
-                publish_date TEXT,
-                content TEXT,
-                url TEXT,
-                reply_count INTEGER,
-                thumbs_up_count INTEGER,
-                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS replies (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                author TEXT,
-                publish_date TEXT,
-                content TEXT,
-                thumbs_up_count INTEGER,
-                FOREIGN KEY(parent_id) REFERENCES discussions(id)
-            )
-        """)
-        self.conn.commit()
 
-    def scrape_subreddit(self, subreddit_name, limit=100, search_query=None):
-        print(f"Scraping r/{subreddit_name}...")
-        subreddit = self.reddit.subreddit(subreddit_name)
-        
-        if search_query:
-            submissions = subreddit.search(search_query, limit=limit)
-        else:
-            submissions = subreddit.new(limit=limit)
+def fetch_posts(subreddit, limit):
+    """Yield post dicts from r/subreddit/new.json up to limit."""
+    url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
+    collected = 0
 
-        count = 0
-        for submission in submissions:
-            self.process_submission(submission, subreddit_name)
-            count += 1
-            if count % 10 == 0:
-                print(f"Processed {count} posts...")
-        
-        print(f"Finished scraping {count} posts from r/{subreddit_name}.")
-
-    def process_submission(self, submission, subreddit_name):
-        # Insert Discussion
+    while url and collected < limit:
         try:
-            publish_date = datetime.fromtimestamp(submission.created_utc).isoformat()
-            
-            self.cursor.execute("""
-                INSERT OR REPLACE INTO discussions 
-                (id, source_id, platform, sub_source, title, author, publish_date, content, url, reply_count, thumbs_up_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                f"reddit_{submission.id}",
-                submission.id,
-                "Reddit",
-                subreddit_name,
-                submission.title,
-                str(submission.author),
-                publish_date,
-                submission.selftext,
-                submission.url,
-                submission.num_comments,
-                submission.score
-            ))
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            print(f"[reddit] HTTP error for r/{subreddit}: {e}")
+            break
+        except requests.RequestException as e:
+            print(f"[reddit] Request failed for r/{subreddit}: {e}")
+            break
 
-            # Process Comments (Replies)
-            submission.comments.replace_more(limit=0) # Flatten comment tree, skip 'load more'
-            for comment in submission.comments.list():
-                comment_date = datetime.fromtimestamp(comment.created_utc).isoformat()
-                
-                self.cursor.execute("""
-                    INSERT OR REPLACE INTO replies
-                    (id, parent_id, author, publish_date, content, thumbs_up_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    f"reddit_{comment.id}",
-                    f"reddit_{submission.id}",
-                    str(comment.author),
-                    comment_date,
-                    comment.body,
-                    comment.score
-                ))
-            
-            self.conn.commit()
-        except Exception as e:
-            print(f"Error processing post {submission.id}: {e}")
+        data = resp.json().get("data", {})
+        posts = data.get("children", [])
+        after = data.get("after")
+
+        print(f"[reddit] r/{subreddit}: fetched {len(posts)} posts (total so far: {collected})")
+
+        for wrapper in posts:
+            if collected >= limit:
+                return
+            post = wrapper.get("data", {})
+
+            created_utc = post.get("created_utc")
+            publish_date = (
+                datetime.fromtimestamp(created_utc, tz=timezone.utc).isoformat()
+                if created_utc else None
+            )
+            permalink = post.get("permalink", "")
+
+            yield {
+                "id": post.get("name") or post.get("id"),
+                "title": post.get("title", ""),
+                "url": f"https://www.reddit.com{permalink}" if permalink else "",
+                "author": post.get("author", ""),
+                "reply_count": post.get("num_comments", 0),
+                "thumbs_up_count": post.get("score", 0),
+                "content": post.get("selftext", ""),
+                "publish_date": publish_date,
+                "sub_source": subreddit,
+            }
+            collected += 1
+
+        url = (
+            f"https://www.reddit.com/r/{subreddit}/new.json?limit=100&after={after}"
+            if after else None
+        )
+
+        # Be polite — Reddit allows ~60 req/min unauthenticated
+        if url:
+            time.sleep(1)
+
+
+def save_post(conn, post):
+    conn.execute("""
+        INSERT OR REPLACE INTO discussions
+            (id, source_id, platform, sub_source, title, author,
+             publish_date, content, url, reply_count, thumbs_up_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        post["id"],
+        post["id"],
+        "Reddit",
+        post["sub_source"],
+        post["title"],
+        post["author"],
+        post["publish_date"],
+        post["content"],
+        post["url"],
+        post["reply_count"],
+        post["thumbs_up_count"],
+    ))
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape Reddit discussions to SQLite.")
-    parser.add_argument("--subreddit", required=True, help="Subreddit to scrape (e.g., microsoft)")
-    parser.add_argument("--query", help="Search query (optional)")
-    parser.add_argument("--limit", type=int, default=50, help="Number of posts to scrape")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--subreddits", default="microsoft,microsoft365",
+                        help="Comma-separated subreddit names")
+    parser.add_argument("--limit", type=int, default=50,
+                        help="Max posts per subreddit")
+    parser.add_argument("--db", default=DB_NAME,
+                        help="SQLite database path")
     args = parser.parse_args()
 
-    client_id = os.getenv("REDDIT_CLIENT_ID")
-    client_secret = os.getenv("REDDIT_CLIENT_SECRET")
-    user_agent = os.getenv("REDDIT_USER_AGENT", "script:customer_intent_scraper:v1.0 (by /u/yourusername)")
+    subreddits = [s.strip() for s in args.subreddits.split(",")]
 
-    if not client_id or not client_secret:
-        print("Error: Missing REDDIT_CLIENT_ID or REDDIT_CLIENT_SECRET in .env file.")
-        return
+    conn = sqlite3.connect(args.db)
+    ensure_tables(conn)
 
-    scraper = RedditScraper(client_id, client_secret, user_agent)
-    scraper.scrape_subreddit(args.subreddit, limit=args.limit, search_query=args.query)
+    total = 0
+    for subreddit in subreddits:
+        print(f"[reddit] Scraping r/{subreddit} (limit={args.limit})")
+        for post in fetch_posts(subreddit, args.limit):
+            save_post(conn, post)
+            total += 1
+        conn.commit()
+        print(f"[reddit] r/{subreddit} done.")
+
+    conn.close()
+    print(f"[reddit] Finished. Saved {total} posts total.")
+
 
 if __name__ == "__main__":
     main()

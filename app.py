@@ -56,9 +56,9 @@ with st.sidebar.expander("Run Scraper"):
                     cmd.extend(["-a", f"max_pages={max_pages}"])
             else:
                 cmd = [
-                    sys.executable, "-m", "scrapy", "crawl", "reddit",
-                    "-a", f"subreddits={subreddits_input}",
-                    "-a", f"limit={limit_posts}"
+                    sys.executable, "scrape_reddit.py",
+                    "--subreddits", subreddits_input,
+                    "--limit", str(limit_posts)
                 ]
             
             # Run process with Popen for real-time output
@@ -192,7 +192,7 @@ def load_data(ttl_hash=None):
         
         # Convert date
         if "publish_date" in df.columns:
-            df["publish_date"] = pd.to_datetime(df["publish_date"], errors='coerce')
+            df["publish_date"] = pd.to_datetime(df["publish_date"], errors='coerce', utc=True)
             
         # Rename analysis columns to match expected format
         column_mapping = {
