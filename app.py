@@ -214,6 +214,18 @@ def load_data(ttl_hash=None):
         st.error(f"Error loading database: {e}")
         return pd.DataFrame()
 
+def load_replies(discussion_id):
+    db_path = "discussions.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query(
+        "SELECT * FROM replies WHERE parent_id = ? ORDER BY publish_date",
+        conn, params=(discussion_id,)
+    )
+    conn.close()
+    return df
+
 # Get the last modification time of the db to force cache invalidation if it changes
 db_path = "discussions.db"
 last_updated = os.path.getmtime(db_path) if os.path.exists(db_path) else 0
@@ -393,12 +405,16 @@ else:
             with st.expander("Full Content", expanded=True):
                 st.write(item.get("content", ""))
 
-            if "replies" in item and isinstance(item["replies"], list):
-                st.markdown(f"#### Replies ({len(item['replies'])})")
-                for reply in item["replies"]:
-                    st.markdown("---")
-                    st.markdown(f"**{reply.get('author', 'Unknown')}** ({reply.get('publish_date', '')})")
-                    st.write(reply.get("content", ""))
+            replies_df = load_replies(item["id"])
+            if not replies_df.empty:
+                st.markdown(f"#### Replies ({len(replies_df)})")
+                for _, reply in replies_df.iterrows():
+                    with st.container(border=True):
+                        st.markdown(f"**{reply.get('author', 'Unknown')}** · {reply.get('publish_date', '')}")
+                        st.write(reply.get("content", ""))
+            else:
+                st.markdown("#### Replies (0)")
+                st.caption("No replies found for this discussion.")
         else:
             st.info("Select the checkbox next to a discussion to view details.")
 
