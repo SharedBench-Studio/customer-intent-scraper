@@ -24,16 +24,24 @@ def load_data_from_db(db_path, limit=0):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    
-    # Select items that haven't been analyzed by AI yet (optional optimization)
-    # For now, just select all or limit
+
     query = "SELECT * FROM discussions"
     if limit > 0:
         query += f" LIMIT {limit}"
-        
     cursor.execute(query)
     rows = cursor.fetchall()
     data = [dict(row) for row in rows]
+
+    # Attach top 3 replies per discussion for richer LLM context
+    for item in data:
+        cursor.execute("""
+            SELECT content FROM replies
+            WHERE parent_id = ?
+            ORDER BY publish_date
+            LIMIT 3
+        """, (item['id'],))
+        item['top_replies'] = [r['content'] for r in cursor.fetchall()]
+
     conn.close()
     return data
 
@@ -88,18 +96,26 @@ def analyze_intent(client, discussion, deployment_name):
         return None
 
     system_prompt = "You are an expert product analyst for Microsoft 365 Copilot. Your goal is to identify customer pain points and categorize feedback."
+
+    top_replies = discussion.get('top_replies', [])
+    replies_text = ""
+    if top_replies:
+        formatted = "\n".join(f"  - {r}" for r in top_replies if r and len(r.strip()) > 5)
+        if formatted:
+            replies_text = f"\nTop replies:\n{formatted}"
+
     user_prompt = f"""
-    Analyze the following customer discussion thread.
-    
+    Analyze the following customer discussion thread including its replies.
+
     Title: {title}
-    Content: {content}
-    
+    Post: {content}{replies_text}
+
     Provide the output in JSON format with the following keys:
     - "category": (e.g., "Bug/Issue", "Feature Request", "How-to/Question", "Pricing/Licensing", "General Discussion")
     - "product_area": (e.g., "Excel", "Outlook", "Teams", "PowerPoint", "Admin Center", "Copilot Studio", "General")
-    - "pain_points": A list of specific struggles or issues mentioned (max 3).
-    - "sentiment": (e.g., "Positive", "Neutral", "Negative")
-    - "summary": A concise one-sentence summary of the core issue.
+    - "pain_points": A list of specific struggles or issues mentioned across the post AND replies (max 3).
+    - "sentiment": Overall sentiment considering both post and replies (e.g., "Positive", "Neutral", "Negative")
+    - "summary": A concise one-sentence summary of the core issue and how it was received.
     """
 
     try:
