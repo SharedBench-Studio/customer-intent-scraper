@@ -41,3 +41,35 @@ def test_load_replies_ordered_by_date(temp_db):
 def test_load_replies_empty_for_unknown_id(temp_db):
     df = _query_replies(temp_db, 'nonexistent')
     assert len(df) == 0
+
+
+def load_data_with_replies(db_path):
+    """Load discussions joined with concatenated reply content."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT d.*,
+               GROUP_CONCAT(r.content, ' ') AS reply_content
+        FROM discussions d
+        LEFT JOIN replies r ON r.parent_id = d.id
+        GROUP BY d.id
+    """)
+    rows = cursor.fetchall()
+    data = [dict(row) for row in rows]
+    conn.close()
+    return data
+
+
+def test_load_data_with_replies_includes_reply_text(temp_db):
+    data = load_data_with_replies(temp_db)
+    d1 = next(d for d in data if d['id'] == 'd1')
+    assert 'First reply' in (d1.get('reply_content') or '')
+    assert 'Second reply' in (d1.get('reply_content') or '')
+
+
+def test_load_data_with_replies_returns_all_discussions(temp_db):
+    data = load_data_with_replies(temp_db)
+    # temp_db fixture only has d1 in discussions table
+    assert len(data) == 1
+    assert data[0]['id'] == 'd1'

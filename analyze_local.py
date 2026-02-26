@@ -10,7 +10,13 @@ def load_data_from_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM discussions")
+    cursor.execute("""
+        SELECT d.*,
+               GROUP_CONCAT(r.content, ' ') AS reply_content
+        FROM discussions d
+        LEFT JOIN replies r ON r.parent_id = d.id
+        GROUP BY d.id
+    """)
     rows = cursor.fetchall()
     data = [dict(row) for row in rows]
     conn.close()
@@ -209,7 +215,11 @@ def main():
     valid_indices = []
     
     for i, item in enumerate(data):
-        text = (str(item.get('title', '')) + " " + str(item.get('content', '')))
+        text = " ".join(filter(None, [
+            str(item.get('title', '')),
+            str(item.get('content', '')),
+            str(item.get('reply_content', '') or '')
+        ]))
         cleaned = clean_text(text)
         if len(cleaned) > 10:
             documents.append(cleaned)
@@ -251,7 +261,11 @@ def main():
     doc_to_cluster = {doc_idx: kmeans.labels_[idx] for idx, doc_idx in enumerate(valid_indices)}
 
     for i, item in enumerate(data):
-        full_text = (str(item.get('title', '')) + " " + str(item.get('content', '')))
+        full_text = " ".join(filter(None, [
+            str(item.get('title', '')),
+            str(item.get('content', '')),
+            str(item.get('reply_content', '') or '')
+        ]))
         
         # Determine cluster info
         if i in doc_to_cluster:
