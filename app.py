@@ -236,8 +236,9 @@ def load_replies(discussion_id):
 
 
 @st.cache_data
-def load_reply_stats():
+def load_reply_stats(ttl_hash=None):
     """Load per-discussion reply counts and aggregated reply text for Topic Explorer."""
+    del ttl_hash
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
@@ -532,7 +533,7 @@ else:
             # --- Reply Intelligence ---
             st.subheader("Reply Intelligence")
 
-            reply_stats = load_reply_stats()
+            reply_stats = load_reply_stats(ttl_hash=last_updated)
 
             if reply_stats.empty:
                 st.caption("No reply data available.")
