@@ -234,6 +234,29 @@ def load_replies(discussion_id):
         st.error(f"Error loading replies: {e}")
         return pd.DataFrame()
 
+
+@st.cache_data
+def load_reply_stats():
+    """Load per-discussion reply counts and aggregated reply text for Topic Explorer."""
+    db_path = "discussions.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("""
+            SELECT parent_id,
+                   COUNT(*) as agg_reply_count,
+                   GROUP_CONCAT(content, ' ') as all_reply_text
+            FROM replies
+            GROUP BY parent_id
+        """, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error loading reply stats: {e}")
+        return pd.DataFrame()
+
+
 # Get the last modification time of the db to force cache invalidation if it changes
 db_path = "discussions.db"
 last_updated = os.path.getmtime(db_path) if os.path.exists(db_path) else 0
@@ -499,10 +522,80 @@ else:
                     keywords = get_top_keywords(user_df["title"] + " " + user_df["content"])
                     st.markdown("**Top Keywords:**")
                     st.write(", ".join([f"*{k[0]}*" for k in keywords]))
-                    
+
                     st.markdown("**Sample Discussions:**")
                     for _, row in user_df.head(5).iterrows():
                         st.markdown(f"- [{row['title']}]({row.get('url', '#')})")
                 else:
                     st.write("No discussions found.")
+
+            # --- Reply Intelligence ---
+            st.subheader("Reply Intelligence")
+
+            reply_stats = load_reply_stats()
+
+            if reply_stats.empty:
+                st.caption("No reply data available.")
+            else:
+                # Merge reply stats onto topic discussions
+                topic_with_replies = topic_df.merge(
+                    reply_stats, left_on="id", right_on="parent_id", how="left"
+                )
+
+                total_replies = int(topic_with_replies["agg_reply_count"].sum(skipna=True))
+                threads_with_replies = int(topic_with_replies["agg_reply_count"].notna().sum())
+                st.markdown(f"**{total_replies} replies** across **{threads_with_replies} discussions** in this topic")
+
+                # Reply sentiment bar (keyword-based on reply text)
+                if total_replies > 0:
+                    all_reply_text = " ".join(
+                        topic_with_replies["all_reply_text"].dropna().tolist()
+                    ).lower()
+                    neg_words = ["fail", "error", "bug", "broken", "issue", "problem", "slow", "crash", "stuck", "frustrat"]
+                    pos_words = ["great", "love", "amazing", "helpful", "thanks", "good", "fixed", "resolved", "working"]
+                    neg = sum(all_reply_text.count(w) for w in neg_words)
+                    pos = sum(all_reply_text.count(w) for w in pos_words)
+                    neu = max(total_replies - neg - pos, 0)
+                    total_signals = neg + pos + neu or 1
+
+                    sentiment_fig = px.bar(
+                        x=["Negative", "Neutral", "Positive"],
+                        y=[neg/total_signals*100, neu/total_signals*100, pos/total_signals*100],
+                        color=["Negative", "Neutral", "Positive"],
+                        color_discrete_map={"Negative": "#e74c3c", "Neutral": "#95a5a6", "Positive": "#2ecc71"},
+                        labels={"x": "Sentiment", "y": "% of signal words"},
+                        title="Reply Sentiment Signal",
+                    )
+                    st.plotly_chart(sentiment_fig, use_container_width=True)
+
+                # Top reply keywords
+                st.markdown("**Top keywords in replies:**")
+                combined_reply_text = " ".join(
+                    topic_with_replies["all_reply_text"].dropna().tolist()
+                )
+                if combined_reply_text.strip():
+                    import re as _re
+                    from sklearn.feature_extraction.text import TfidfVectorizer as _TV
+                    cleaned = _re.sub(r'[^a-zA-Z\s]', '', combined_reply_text).lower()
+                    try:
+                        tv = _TV(stop_words='english', max_features=50)
+                        tv.fit_transform([cleaned])
+                        top_words = tv.get_feature_names_out()[:10]
+                        st.write(", ".join(top_words))
+                    except Exception:
+                        st.caption("Not enough reply text for keyword extraction.")
+                else:
+                    st.caption("No reply text available for this topic.")
+
+                # Resolution signal
+                if threads_with_replies > 0:
+                    def is_positive(text):
+                        if not text:
+                            return False
+                        return any(w in str(text).lower() for w in ["fixed", "resolved", "working", "thanks", "solved"])
+
+                    resolved = topic_with_replies["all_reply_text"].apply(is_positive).sum()
+                    pct = int(resolved / threads_with_replies * 100)
+                    st.metric("Threads showing resolution signal", f"{pct}%",
+                              help="% of threads where replies contain words like 'fixed', 'resolved', 'working'")
 
