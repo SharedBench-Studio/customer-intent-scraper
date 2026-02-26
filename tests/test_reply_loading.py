@@ -1,17 +1,11 @@
 import sqlite3
 import pytest
 import pandas as pd
+import sys
+import os
 
-
-def load_replies(db_path, discussion_id):
-    """Fetch replies for a single discussion from SQLite."""
-    conn = sqlite3.connect(db_path)
-    df = pd.read_sql_query(
-        "SELECT * FROM replies WHERE parent_id = ? ORDER BY publish_date",
-        conn, params=(discussion_id,)
-    )
-    conn.close()
-    return df
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from app import _query_replies
 
 
 @pytest.fixture
@@ -33,17 +27,17 @@ def temp_db(tmp_path):
 
 
 def test_load_replies_returns_only_matching_discussion(temp_db):
-    df = load_replies(temp_db, 'd1')
+    df = _query_replies(temp_db, 'd1')
     assert len(df) == 2
     assert set(df['author'].tolist()) == {'alice', 'bob'}
 
 
 def test_load_replies_ordered_by_date(temp_db):
-    df = load_replies(temp_db, 'd1')
+    df = _query_replies(temp_db, 'd1')
     assert df.iloc[0]['author'] == 'alice'
     assert df.iloc[1]['author'] == 'bob'
 
 
 def test_load_replies_empty_for_unknown_id(temp_db):
-    df = load_replies(temp_db, 'nonexistent')
+    df = _query_replies(temp_db, 'nonexistent')
     assert len(df) == 0

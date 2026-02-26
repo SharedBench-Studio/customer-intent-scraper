@@ -214,10 +214,7 @@ def load_data(ttl_hash=None):
         st.error(f"Error loading database: {e}")
         return pd.DataFrame()
 
-def load_replies(discussion_id):
-    db_path = "discussions.db"
-    if not os.path.exists(db_path):
-        return pd.DataFrame()
+def _query_replies(db_path, discussion_id):
     conn = sqlite3.connect(db_path)
     df = pd.read_sql_query(
         "SELECT * FROM replies WHERE parent_id = ? ORDER BY publish_date",
@@ -225,6 +222,17 @@ def load_replies(discussion_id):
     )
     conn.close()
     return df
+
+
+def load_replies(discussion_id):
+    db_path = "discussions.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        return _query_replies(db_path, discussion_id)
+    except Exception as e:
+        st.error(f"Error loading replies: {e}")
+        return pd.DataFrame()
 
 # Get the last modification time of the db to force cache invalidation if it changes
 db_path = "discussions.db"
