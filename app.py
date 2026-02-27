@@ -171,6 +171,47 @@ with st.sidebar.expander("Run Analysis"):
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
 
+with st.sidebar.expander("Query Bank"):
+    st.write("Extract customer queries and test doc retrievability.")
+
+    if st.button("Extract Queries"):
+        st.info("Extracting queries from discussions...")
+        result = subprocess.run(
+            [sys.executable, "extract_queries.py", "--db", "discussions.db"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            st.success("Queries extracted!")
+            st.code(result.stdout)
+            st.cache_data.clear()
+        else:
+            st.error("Extraction failed.")
+            st.code(result.stderr)
+
+    st.markdown("---")
+    docs_path = st.text_input("Docs folder path", placeholder="C:/path/to/your/docs")
+    top_n = st.number_input("Top N results per query", min_value=1, max_value=10, value=5)
+
+    if st.button("Run Retrievability Test"):
+        if not docs_path:
+            st.warning("Enter a docs folder path first.")
+        else:
+            st.info("Scoring queries against docs...")
+            result = subprocess.run(
+                [sys.executable, "test_retrievability.py",
+                 "--docs-path", docs_path,
+                 "--db", "discussions.db",
+                 "--top-n", str(top_n)],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                st.success("Retrievability test complete!")
+                st.code(result.stdout)
+                st.cache_data.clear()
+            else:
+                st.error("Test failed.")
+                st.code(result.stderr)
+
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear()
     st.rerun()
@@ -258,6 +299,50 @@ def load_reply_stats(ttl_hash=None):
         return pd.DataFrame()
 
 
+@st.cache_data
+def load_queries_df(ttl_hash=None):
+    """Load extracted queries with their source discussion title."""
+    del ttl_hash
+    db_path = "discussions.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("""
+            SELECT q.id, q.query_text, q.method, q.product_area,
+                   q.created_at, d.title as source_title, d.url as source_url
+            FROM queries q
+            LEFT JOIN discussions d ON d.id = q.source_id
+        """, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error loading queries: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data
+def load_retrievability_df(ttl_hash=None):
+    """Load retrievability results joined with query text."""
+    del ttl_hash
+    db_path = "discussions.db"
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("""
+            SELECT r.query_id, r.doc_path, r.doc_title, r.rank, r.score,
+                   q.query_text, q.product_area
+            FROM retrievability_results r
+            JOIN queries q ON q.id = r.query_id
+        """, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error loading retrievability results: {e}")
+        return pd.DataFrame()
+
+
 # Get the last modification time of the db to force cache invalidation if it changes
 db_path = "discussions.db"
 last_updated = os.path.getmtime(db_path) if os.path.exists(db_path) else 0
@@ -267,7 +352,7 @@ if df.empty:
     st.warning("No data found. Please run the scraper first (or the analysis script).")
 else:
     # Tabs for different views
-    tab1, tab2 = st.tabs(["General Dashboard", "Topic Explorer"])
+    tab1, tab2, tab3 = st.tabs(["General Dashboard", "Topic Explorer", "Query Bank"])
 
     with tab1:
         # Filters
@@ -600,3 +685,80 @@ else:
                     st.metric("Threads showing resolution signal", f"{pct}%",
                               help="% of threads where replies contain words like 'fixed', 'resolved', 'working'")
 
+    with tab3:
+        st.header("Query Bank")
+        st.write("Real customer queries extracted from community discussions, scored against your documentation.")
+
+        queries_df = load_queries_df(ttl_hash=last_updated)
+        retrievability_df = load_retrievability_df(ttl_hash=last_updated)
+
+        if queries_df.empty:
+            st.info("No queries yet. Click **Extract Queries** in the sidebar to get started.")
+        else:
+            # --- Summary metrics ---
+            total_q = len(queries_df)
+            tested_q = retrievability_df["query_id"].nunique() if not retrievability_df.empty else 0
+            avg_top1 = retrievability_df[retrievability_df["rank"] == 1]["score"].mean() if not retrievability_df.empty else None
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Queries", total_q)
+            col2.metric("Queries Tested", tested_q)
+            col3.metric("Avg Top-1 Score", f"{avg_top1:.3f}" if avg_top1 is not None else "—")
+
+            # --- Method breakdown ---
+            if "method" in queries_df.columns:
+                method_counts = queries_df["method"].value_counts().reset_index()
+                method_counts.columns = ["Method", "Count"]
+                fig = px.bar(method_counts, x="Method", y="Count",
+                             title="Queries by Extraction Method",
+                             color="Method")
+                st.plotly_chart(fig, use_container_width=True)
+
+            # --- Query list ---
+            st.subheader("Query List")
+            search = st.text_input("Search queries", placeholder="filter by keyword...")
+            filtered_q = queries_df
+            if search:
+                mask = queries_df["query_text"].str.contains(search, case=False, na=False)
+                filtered_q = queries_df[mask]
+
+            display_cols = ["query_text", "method", "product_area", "source_title"]
+            display_cols = [c for c in display_cols if c in filtered_q.columns]
+            q_selection = st.dataframe(
+                filtered_q[display_cols].reset_index(drop=True),
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="single-row"
+            )
+
+            # --- Query detail: top docs ---
+            if q_selection.selection.rows and not retrievability_df.empty:
+                selected_idx = q_selection.selection.rows[0]
+                selected_q = filtered_q.iloc[selected_idx]
+                query_id = selected_q["id"]
+
+                st.subheader(f"Top docs for: *{selected_q['query_text']}*")
+                if selected_q.get("source_title"):
+                    st.caption(f"Source discussion: {selected_q['source_title']}")
+
+                top_docs = retrievability_df[retrievability_df["query_id"] == query_id].sort_values("rank")
+                if top_docs.empty:
+                    st.info("This query hasn't been tested yet. Run the retrievability test.")
+                else:
+                    for _, row in top_docs.iterrows():
+                        with st.container(border=True):
+                            score_pct = f"{row['score']:.1%}"
+                            st.markdown(f"**#{row['rank']}** — {row['doc_title']} `{score_pct}`")
+                            st.caption(row["doc_path"])
+
+            # --- Coverage gaps ---
+            if not retrievability_df.empty:
+                st.subheader("Coverage Gaps")
+                st.write("Queries where the top-1 doc score is below 0.05 — likely missing or hard-to-find content.")
+                top1 = retrievability_df[retrievability_df["rank"] == 1]
+                gaps = top1[top1["score"] < 0.05][["query_text", "score", "product_area"]].copy()
+                gaps["score"] = gaps["score"].round(4)
+                if gaps.empty:
+                    st.success("No significant coverage gaps found.")
+                else:
+                    st.dataframe(gaps.reset_index(drop=True), use_container_width=True)
