@@ -184,6 +184,7 @@ with st.sidebar.expander("Query Bank"):
             st.success("Queries extracted!")
             st.code(result.stdout)
             st.cache_data.clear()
+            st.rerun()
         else:
             st.error("Extraction failed.")
             st.code(result.stderr)
@@ -208,6 +209,7 @@ with st.sidebar.expander("Query Bank"):
                 st.success("Retrievability test complete!")
                 st.code(result.stdout)
                 st.cache_data.clear()
+                st.rerun()
             else:
                 st.error("Test failed.")
                 st.code(result.stderr)
@@ -703,7 +705,7 @@ else:
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Queries", total_q)
             col2.metric("Queries Tested", tested_q)
-            col3.metric("Avg Top-1 Score", f"{avg_top1:.3f}" if avg_top1 is not None else "—")
+            col3.metric("Avg Top-1 Score", f"{avg_top1:.3f}" if avg_top1 is not None and avg_top1 == avg_top1 else "—")
 
             # --- Method breakdown ---
             if "method" in queries_df.columns:
@@ -732,7 +734,7 @@ else:
             )
 
             # --- Query detail: top docs ---
-            if q_selection.selection.rows and not retrievability_df.empty:
+            if q_selection.selection.rows:
                 selected_idx = q_selection.selection.rows[0]
                 selected_q = filtered_q.iloc[selected_idx]
                 query_id = selected_q["id"]
@@ -741,15 +743,18 @@ else:
                 if selected_q.get("source_title"):
                     st.caption(f"Source discussion: {selected_q['source_title']}")
 
-                top_docs = retrievability_df[retrievability_df["query_id"] == query_id].sort_values("rank")
-                if top_docs.empty:
+                if retrievability_df.empty:
                     st.info("This query hasn't been tested yet. Run the retrievability test.")
                 else:
-                    for _, row in top_docs.iterrows():
-                        with st.container(border=True):
-                            score_pct = f"{row['score']:.1%}"
-                            st.markdown(f"**#{row['rank']}** — {row['doc_title']} `{score_pct}`")
-                            st.caption(row["doc_path"])
+                    top_docs = retrievability_df[retrievability_df["query_id"] == query_id].sort_values("rank")
+                    if top_docs.empty:
+                        st.info("This query hasn't been tested yet. Run the retrievability test.")
+                    else:
+                        for _, row in top_docs.iterrows():
+                            with st.container(border=True):
+                                score_pct = f"{row['score']:.1%}"
+                                st.markdown(f"**#{row['rank']}** — {row['doc_title']} `{score_pct}`")
+                                st.caption(row["doc_path"])
 
             # --- Coverage gaps ---
             if not retrievability_df.empty:
