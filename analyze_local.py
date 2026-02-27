@@ -6,7 +6,15 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from collections import Counter
 
-def load_data_from_db(db_path):
+def _build_full_text(item):
+    """Combine title, content, and reply_content into a single text string for analysis."""
+    return " ".join(filter(None, [
+        str(item.get('title', '')),
+        str(item.get('content', '')),
+        str(item.get('reply_content', '') or ''),
+    ]))
+
+def load_discussions_with_replies(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -201,7 +209,7 @@ def main():
 
     print(f"Loading data from {args.db}...")
     try:
-        data = load_data_from_db(args.db)
+        data = load_discussions_with_replies(args.db)
     except Exception as e:
         print(f"Error loading database: {e}")
         return
@@ -215,11 +223,7 @@ def main():
     valid_indices = []
     
     for i, item in enumerate(data):
-        text = " ".join(filter(None, [
-            str(item.get('title', '')),
-            str(item.get('content', '')),
-            str(item.get('reply_content', '') or '')
-        ]))
+        text = _build_full_text(item)
         cleaned = clean_text(text)
         if len(cleaned) > 10:
             documents.append(cleaned)
@@ -261,11 +265,7 @@ def main():
     doc_to_cluster = {doc_idx: kmeans.labels_[idx] for idx, doc_idx in enumerate(valid_indices)}
 
     for i, item in enumerate(data):
-        full_text = " ".join(filter(None, [
-            str(item.get('title', '')),
-            str(item.get('content', '')),
-            str(item.get('reply_content', '') or '')
-        ]))
+        full_text = _build_full_text(item)
         
         # Determine cluster info
         if i in doc_to_cluster:

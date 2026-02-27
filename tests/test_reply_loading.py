@@ -6,7 +6,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from app import _query_replies
-from analyze_local import load_data_from_db
+from analyze_local import load_discussions_with_replies
 
 
 @pytest.fixture
@@ -45,13 +45,13 @@ def test_load_replies_empty_for_unknown_id(temp_db):
 
 
 def test_load_data_with_replies_includes_reply_text(temp_db):
-    data = load_data_from_db(temp_db)
+    data = load_discussions_with_replies(temp_db)
     d1 = next(d for d in data if d['id'] == 'd1')
     assert 'First reply' in (d1.get('reply_content') or '')
     assert 'Second reply' in (d1.get('reply_content') or '')
 
 
 def test_load_data_with_replies_returns_all_discussions(temp_db):
-    data = load_data_from_db(temp_db)
+    data = load_discussions_with_replies(temp_db)
     assert len(data) == 1
     assert data[0]['id'] == 'd1'

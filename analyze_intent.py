@@ -20,7 +20,7 @@ try:
 except ImportError:
     def tqdm(iterable, **kwargs): return iterable
 
-def load_data_from_db(db_path, limit=0):
+def load_discussions_for_ai(db_path, limit=0):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -155,7 +155,7 @@ def main():
         return
 
     print(f"Loading data from {args.db}...")
-    data = load_data_from_db(args.db, args.limit)
+    data = load_discussions_for_ai(args.db, args.limit)
     
     print(f"Processing {len(data)} items...")
 
