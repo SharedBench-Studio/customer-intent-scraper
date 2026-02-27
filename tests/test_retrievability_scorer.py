@@ -1,6 +1,6 @@
 import os
 import pytest
-from test_retrievability import index_docs, build_index, score_query, extract_title_from_markdown
+from score_retrievability import index_docs, score_query, extract_title_from_markdown, build_index
 
 
 @pytest.fixture

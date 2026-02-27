@@ -3,7 +3,7 @@ Local Markdown doc TF-IDF retrievability scorer.
 Indexes a folder of .md files and scores queries from the queries table.
 
 Usage:
-    python test_retrievability.py --docs-path C:/path/to/docs --db discussions.db --top-n 5
+    python score_retrievability.py --docs-path C:/path/to/docs --db discussions.db --top-n 5
 """
 
 import argparse
@@ -123,7 +123,7 @@ def save_results(conn, results):
         INSERT INTO retrievability_results (query_id, doc_path, doc_title, rank, score)
         VALUES (:query_id, :doc_path, :doc_title, :rank, :score)
     """, results)
-    conn.commit()
+    # Do not commit here — caller commits once after all results are saved
 
 
 def main():
@@ -165,6 +165,7 @@ def main():
             total += len(rows)
             if (i + 1) % 100 == 0:
                 print(f"  Scored {i + 1}/{len(queries)} queries...")
+        conn.commit()  # Single commit — covers DELETE + all inserts atomically
     except sqlite3.Error as e:
         print(f"Error saving results to database: {e}")
         return
