@@ -48,34 +48,34 @@ def load_data_from_db(db_path, limit=0):
 def update_db_with_analysis(db_path, item_id, analysis):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # Add columns if they don't exist
+
+    # Add columns if they don't exist.
+    # Note: analysis_category is NOT updated here — it holds TF-IDF cluster names
+    # set by analyze_local.py and should not be overwritten by AI analysis.
     columns = [
-        "analysis_category", "analysis_product_area", "analysis_sentiment", 
+        "analysis_product_area", "analysis_sentiment",
         "analysis_intent", "analysis_summary", "analysis_pain_points"
     ]
-    
+
     for col in columns:
         try:
             cursor.execute(f"ALTER TABLE discussions ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
             pass # Column likely exists
 
-    # Update row
+    # Update row. analysis_category is intentionally excluded — see comment above.
     cursor.execute("""
-        UPDATE discussions 
-        SET analysis_category = ?, 
-            analysis_product_area = ?, 
+        UPDATE discussions
+        SET analysis_product_area = ?,
             analysis_sentiment = ?,
             analysis_intent = ?,
             analysis_summary = ?,
             analysis_pain_points = ?
         WHERE id = ?
     """, (
-        analysis.get('category'),
         analysis.get('product_area'),
         analysis.get('sentiment'),
-        analysis.get('category'), # Mapping category to intent for consistency with local script
+        analysis.get('intent'),
         analysis.get('summary'),
         json.dumps(analysis.get('pain_points', [])),
         item_id
@@ -111,7 +111,7 @@ def analyze_intent(client, discussion, deployment_name):
     Post: {content}{replies_text}
 
     Provide the output in JSON format with the following keys:
-    - "category": (e.g., "Bug/Issue", "Feature Request", "How-to/Question", "Pricing/Licensing", "General Discussion")
+    - "intent": The type of request (e.g., "Bug/Issue", "Feature Request", "How-to/Question", "Pricing/Licensing", "General Discussion")
     - "product_area": (e.g., "Excel", "Outlook", "Teams", "PowerPoint", "Admin Center", "Copilot Studio", "General")
     - "pain_points": A list of specific struggles or issues mentioned across the post AND replies (max 3).
     - "sentiment": Overall sentiment considering both post and replies (e.g., "Positive", "Neutral", "Negative")
