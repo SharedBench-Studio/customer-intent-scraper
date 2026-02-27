@@ -14,7 +14,7 @@ import sqlite3
 
 
 MIN_TITLE_LENGTH = 10       # skip titles shorter than this
-MAX_TITLE_LENGTH = 200      # skip titles longer than this (likely noise)
+MAX_QUERY_LENGTH = 200      # skip titles longer than this (likely noise)
 MAX_CONTENT_QUESTIONS = 3   # max questions extracted per discussion content
 
 # Words/phrases that commonly precede a question but are not part of it
@@ -54,7 +54,7 @@ def extract_queries_from_discussion(discussion):
             })
 
     # Rule 1: Title is a question
-    if title.endswith("?") and MIN_TITLE_LENGTH <= len(title) <= MAX_TITLE_LENGTH:
+    if title.endswith("?") and MIN_TITLE_LENGTH <= len(title) <= MAX_QUERY_LENGTH:
         add(title, "title_question")
 
     # Rule 2: Sentences in content that end with ?
@@ -63,10 +63,10 @@ def extract_queries_from_discussion(discussion):
         count = 0
         for sentence in sentences:
             sentence = sentence.strip()
-            if sentence.endswith("?") and MIN_TITLE_LENGTH <= len(sentence) <= MAX_TITLE_LENGTH:
+            if sentence.endswith("?") and MIN_TITLE_LENGTH <= len(sentence) <= MAX_QUERY_LENGTH:
                 # Strip leading preamble (e.g. "Also, " / "And, ") before a question word
                 sentence = _strip_preamble(sentence)
-                if sentence and MIN_TITLE_LENGTH <= len(sentence) <= MAX_TITLE_LENGTH:
+                if sentence and MIN_TITLE_LENGTH <= len(sentence) <= MAX_QUERY_LENGTH:
                     add(sentence, "content_question")
                     count += 1
                     if count >= MAX_CONTENT_QUESTIONS:
@@ -74,7 +74,7 @@ def extract_queries_from_discussion(discussion):
 
     # Rule 3: Short non-question title treated as implicit query
     if (not title.endswith("?")
-            and MIN_TITLE_LENGTH <= len(title) <= MAX_TITLE_LENGTH
+            and MIN_TITLE_LENGTH <= len(title) <= MAX_QUERY_LENGTH
             and not queries):  # only if no questions found yet
         add(title, "title_implicit")
 
@@ -110,7 +110,13 @@ def load_discussions(db_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute("SELECT id, title, content, analysis_product_area FROM discussions")
+    try:
+        cur.execute("SELECT id, title, content, analysis_product_area FROM discussions")
+    except sqlite3.OperationalError as e:
+        conn.close()
+        print(f"Error reading discussions table: {e}")
+        print("Tip: Make sure discussions.db exists and has been populated by the scraper.")
+        return []
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
@@ -142,9 +148,16 @@ def main():
 
     conn = sqlite3.connect(args.db)
     ensure_table(conn)
-    # Clear previous extraction before re-running
-    conn.execute("DELETE FROM queries")
-    save_queries(conn, all_queries)
+    try:
+        # DELETE and save_queries are intentionally in the same transaction:
+        # conn.commit() is only called inside save_queries, so if save_queries
+        # fails, the DELETE is also rolled back and the table stays intact.
+        conn.execute("DELETE FROM queries")
+        save_queries(conn, all_queries)
+    except sqlite3.Error as e:
+        conn.close()
+        print(f"Error saving queries to database: {e}")
+        return
     conn.close()
     print("Done. Queries saved to 'queries' table.")
 
