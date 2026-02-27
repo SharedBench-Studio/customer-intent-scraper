@@ -12,3 +12,5 @@ build/
 items_cleaned.json
 intent_analysis.json
 .env
+playwright_installed.flag
+.claude/
