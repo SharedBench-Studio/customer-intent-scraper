@@ -47,25 +47,35 @@ def index_docs(docs_path):
     return docs
 
 
-def score_query(query_text, docs, top_n=5):
+def build_index(docs):
     """
-    Score a single query against indexed docs using TF-IDF cosine similarity.
-    Returns list of top_n results: {rank, doc_path, doc_title, score}
+    Build TF-IDF index from a list of doc dicts.
+    Returns (vectorizer, doc_matrix) — call once, reuse for all queries.
     """
     if not docs:
-        return []
-
+        return None, None
     corpus = [d["text"] for d in docs]
     vectorizer = TfidfVectorizer(stop_words="english", max_features=10000)
     try:
         doc_matrix = vectorizer.fit_transform(corpus)
-        query_vec = vectorizer.transform([query_text])
     except ValueError:
-        return []
+        return None, None
+    return vectorizer, doc_matrix
 
+
+def score_query(query_text, vectorizer, doc_matrix, docs, top_n=5):
+    """
+    Score a single query against a pre-built TF-IDF index.
+    Returns list of top_n results: {rank, doc_path, doc_title, score}
+    """
+    if vectorizer is None or doc_matrix is None or not docs:
+        return []
+    try:
+        query_vec = vectorizer.transform([query_text])
+    except Exception:
+        return []
     scores = cosine_similarity(query_vec, doc_matrix).flatten()
     top_indices = np.argsort(scores)[::-1][:top_n]
-
     results = []
     for rank, idx in enumerate(top_indices, start=1):
         results.append({
@@ -137,28 +147,30 @@ def main():
         return
     print(f"  {len(queries)} queries loaded.")
 
+    # Build index once before the query loop
+    vectorizer, doc_matrix = build_index(docs)
+    if vectorizer is None:
+        print("Failed to build document index.")
+        return
+
     conn = sqlite3.connect(args.db)
     ensure_table(conn)
     try:
-        # DELETE and save_results are intentionally in the same transaction:
-        # conn.commit() is only called inside save_results, so if save_results
-        # fails, the DELETE is also rolled back and the table stays intact.
         conn.execute("DELETE FROM retrievability_results")
-
         total = 0
         for i, q in enumerate(queries):
-            results = score_query(q["query_text"], docs, top_n=args.top_n)
+            results = score_query(q["query_text"], vectorizer, doc_matrix, docs, top_n=args.top_n)
             rows = [{**r, "query_id": q["id"]} for r in results]
             save_results(conn, rows)
             total += len(rows)
             if (i + 1) % 100 == 0:
                 print(f"  Scored {i + 1}/{len(queries)} queries...")
     except sqlite3.Error as e:
-        conn.close()
         print(f"Error saving results to database: {e}")
         return
+    finally:
+        conn.close()
 
-    conn.close()
     print(f"Done. {total} results saved to 'retrievability_results' table.")
 
 

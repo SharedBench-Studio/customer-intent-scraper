@@ -1,6 +1,6 @@
 import os
 import pytest
-from test_retrievability import index_docs, score_query, extract_title_from_markdown
+from test_retrievability import index_docs, build_index, score_query, extract_title_from_markdown
 
 
 @pytest.fixture
@@ -39,20 +39,23 @@ def test_extract_title_falls_back_to_filename():
 
 def test_score_query_returns_top_n(doc_dir):
     docs = index_docs(doc_dir)
-    results = score_query("How do I enable Copilot for my tenant?", docs, top_n=2)
+    vectorizer, doc_matrix = build_index(docs)
+    results = score_query("How do I enable Copilot for my tenant?", vectorizer, doc_matrix, docs, top_n=2)
     assert len(results) == 2
     assert all("rank" in r and "score" in r and "doc_path" in r for r in results)
     assert results[0]["rank"] == 1
     assert results[1]["rank"] == 2
+    assert results[0]["score"] >= results[1]["score"]
 
 
 def test_score_query_ranks_relevant_doc_higher(doc_dir):
     docs = index_docs(doc_dir)
-    results = score_query("How do I configure Copilot for my tenant admin?", docs, top_n=3)
+    vectorizer, doc_matrix = build_index(docs)
+    results = score_query("How do I configure Copilot for my tenant admin?", vectorizer, doc_matrix, docs, top_n=3)
     top_doc = results[0]["doc_path"]
     assert "copilot-setup" in top_doc
 
 
 def test_score_query_returns_empty_for_no_docs():
-    results = score_query("anything", [], top_n=5)
+    results = score_query("anything", None, None, [], top_n=5)
     assert results == []
