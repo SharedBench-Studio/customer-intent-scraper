@@ -171,48 +171,6 @@ with st.sidebar.expander("Run Analysis"):
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
 
-with st.sidebar.expander("Query Bank"):
-    st.write("Extract customer queries and test doc retrievability.")
-
-    if st.button("Extract Queries"):
-        st.info("Extracting queries from discussions...")
-        result = subprocess.run(
-            [sys.executable, "extract_queries.py", "--db", "discussions.db"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            st.success("Queries extracted!")
-            st.code(result.stdout)
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.error("Extraction failed.")
-            st.code(result.stderr)
-
-    st.markdown("---")
-    docs_path = st.text_input("Docs folder path", placeholder="C:/path/to/your/docs")
-    top_n = st.number_input("Top N results per query", min_value=1, max_value=10, value=5)
-
-    if st.button("Run Retrievability Test"):
-        if not docs_path:
-            st.warning("Enter a docs folder path first.")
-        else:
-            st.info("Scoring queries against docs...")
-            result = subprocess.run(
-                [sys.executable, "score_retrievability.py",
-                 "--docs-path", docs_path,
-                 "--db", "discussions.db",
-                 "--top-n", str(top_n)],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                st.success("Retrievability test complete!")
-                st.code(result.stdout)
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("Test failed.")
-                st.code(result.stderr)
 
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear()
@@ -314,7 +272,9 @@ def load_queries_df(ttl_hash=None):
     try:
         df = pd.read_sql_query("""
             SELECT q.id, q.query_text, q.method, q.product_area,
-                   q.created_at, d.title as source_title, d.url as source_url
+                   q.created_at, d.title as source_title, d.url as source_url,
+                   d.thumbs_up_count as source_likes,
+                   d.reply_count as source_replies
             FROM queries q
             LEFT JOIN discussions d ON d.id = q.source_id
         """, conn)
@@ -720,15 +680,47 @@ else:
                              color="Method")
                 st.plotly_chart(fig, use_container_width=True)
 
+            with st.expander("How are queries extracted?"):
+                st.markdown("""
+**Three extraction methods — quality varies:**
+
+| Method | Description | Quality |
+|---|---|---|
+| `title_question` | Post title ends with `?` | Strongest — clear user intent |
+| `content_question` | Question sentences from post body | Medium — well-formed but noisier |
+| `title_implicit` | Short non-question titles as implicit queries | Weakest — can produce noise like "Help" |
+
+Use the **Method** filter below to focus on higher-quality queries. Setting a **min length** removes very short noise entries.
+                """)
+
             # --- Query list ---
             st.subheader("Query List")
-            search = st.text_input("Search queries", placeholder="filter by keyword...")
-            filtered_q = queries_df
-            if search:
-                mask = queries_df["query_text"].str.contains(search, case=False, na=False)
-                filtered_q = queries_df[mask]
 
-            display_cols = ["query_text", "method", "product_area", "source_title"]
+            fc1, fc2, fc3 = st.columns([2, 2, 1])
+            with fc1:
+                all_methods = sorted(queries_df["method"].dropna().unique().tolist())
+                selected_methods = st.multiselect("Method", options=all_methods, default=all_methods)
+            with fc2:
+                all_areas = sorted(queries_df["product_area"].dropna().unique().tolist())
+                selected_areas = st.multiselect("Product Area", options=all_areas, default=all_areas)
+            with fc3:
+                min_length = st.slider("Min query length", min_value=0, max_value=100, value=0, step=5)
+
+            search = st.text_input("Search queries", placeholder="filter by keyword...")
+
+            filtered_q = queries_df
+            if selected_methods:
+                filtered_q = filtered_q[filtered_q["method"].isin(selected_methods)]
+            if selected_areas:
+                filtered_q = filtered_q[filtered_q["product_area"].isin(selected_areas)]
+            if min_length > 0:
+                filtered_q = filtered_q[filtered_q["query_text"].str.len().fillna(0) >= min_length]
+            if search:
+                filtered_q = filtered_q[filtered_q["query_text"].str.contains(search, case=False, na=False)]
+
+            st.caption(f"Showing {len(filtered_q):,} of {len(queries_df):,} queries")
+
+            display_cols = ["query_text", "method", "product_area", "source_title", "source_likes", "source_replies"]
             display_cols = [c for c in display_cols if c in filtered_q.columns]
             q_selection = st.dataframe(
                 filtered_q[display_cols].reset_index(drop=True),
