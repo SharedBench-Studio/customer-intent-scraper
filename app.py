@@ -704,7 +704,7 @@ Use the **Method** filter below to focus on higher-quality queries. Setting a **
                 all_areas = sorted(queries_df["product_area"].dropna().unique().tolist())
                 selected_areas = st.multiselect("Product Area", options=all_areas, default=all_areas)
             with fc3:
-                min_length = st.slider("Min query length", min_value=0, max_value=100, value=0, step=5)
+                min_length = st.slider("Min query length (chars)", min_value=0, max_value=100, value=0, step=5, key="min_query_length")
 
             search = st.text_input("Search queries", placeholder="filter by keyword...")
 
