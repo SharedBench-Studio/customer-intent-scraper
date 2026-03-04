@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 import re
 from dotenv import load_dotenv
+from text_utils import is_meaningful_query
 
 load_dotenv()
 
@@ -297,7 +298,7 @@ def load_retrievability_df(ttl_hash=None):
     try:
         df = pd.read_sql_query("""
             SELECT r.query_id, r.doc_path, r.doc_title, r.rank, r.score,
-                   q.query_text, q.product_area
+                   q.query_text, q.product_area, q.method
             FROM retrievability_results r
             JOIN queries q ON q.id = r.query_id
         """, conn)
@@ -756,8 +757,38 @@ Use the **Method** filter below to focus on higher-quality queries. Setting a **
             if not retrievability_df.empty:
                 st.subheader("Coverage Gaps")
                 st.write("Queries where the top-1 doc score is below 0.05 — likely missing or hard-to-find content.")
+
+                with st.expander("How is this calculated?"):
+                    st.markdown("""
+**Algorithm: TF-IDF + cosine similarity**
+
+1. All `.md` files in your docs folder are indexed using TF-IDF (Term Frequency–Inverse Document Frequency).
+2. Each query is transformed into the same TF-IDF vector space.
+3. Cosine similarity is computed between the query vector and every doc vector (range 0.0–1.0).
+4. The highest-scoring doc for each query is its **top-1 match**.
+5. Queries whose top-1 score is **< 0.05** are flagged as gaps — they have near-zero vocabulary overlap with any doc.
+
+**Why the score can be low:**
+- *Noisy query*: fragments like "If so, how" tokenise to almost nothing after stop-word removal.
+- *Vocabulary mismatch*: a well-formed query uses different words than the matching doc (e.g. "set up the extension" vs. "Getting Started"). TF-IDF is purely lexical — it cannot match synonyms or paraphrases.
+
+**What is filtered out:**
+- Queries shorter than 20 characters (fragments) — excluded at scoring time and here
+- Queries from the `title_implicit` extraction method — excluded at scoring time (never written to the database)
+- Queries with fewer than 2 meaningful tokens after removing stop words and question words — applied here as a secondary guard
+
+The scorer (`score_retrievability.py`) is the primary gate. This view applies `is_meaningful_query` as a safety net for any results scored before that gate was in place.
+                    """)
+
                 top1 = retrievability_df[retrievability_df["rank"] == 1]
-                gaps = top1[top1["score"] < 0.05][["query_text", "score", "product_area"]].copy()
+                raw_gaps = top1[top1["score"] < 0.05].copy()
+
+                # Apply quality gate: exclude title_implicit and noise queries
+                if "method" in raw_gaps.columns:
+                    raw_gaps = raw_gaps[raw_gaps["method"] != "title_implicit"]
+                raw_gaps = raw_gaps[raw_gaps["query_text"].apply(is_meaningful_query)]
+
+                gaps = raw_gaps[["query_text", "score", "product_area"]].copy()
                 gaps["score"] = gaps["score"].round(4)
                 if gaps.empty:
                     st.success("No significant coverage gaps found.")

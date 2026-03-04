@@ -82,13 +82,13 @@ def query_retrievability_df(db_path: str) -> pd.DataFrame:
     """Return retrievability results joined with query text.
 
     Columns: query_id, doc_path, doc_title, rank, score,
-             query_text, product_area
+             query_text, product_area, method
     """
     with get_db(db_path) as conn:
         return pd.read_sql_query(
             """
             SELECT r.query_id, r.doc_path, r.doc_title, r.rank, r.score,
-                   q.query_text, q.product_area
+                   q.query_text, q.product_area, q.method
             FROM retrievability_results r
             JOIN queries q ON q.id = r.query_id
             """,

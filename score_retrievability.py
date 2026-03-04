@@ -8,12 +8,13 @@ Usage:
 
 import argparse
 import os
-import re
 import sqlite3
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from text_utils import is_meaningful_query
 
 
 def extract_title_from_markdown(text, fallback="untitled"):
@@ -107,7 +108,7 @@ def load_queries(db_path):
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     try:
-        cur.execute("SELECT id, query_text FROM queries")
+        cur.execute("SELECT id, query_text, method FROM queries")
     except sqlite3.OperationalError as e:
         conn.close()
         print(f"Error reading queries table: {e}")
@@ -146,6 +147,16 @@ def main():
         print("No queries found. Run extract_queries.py first.")
         return
     print(f"  {len(queries)} queries loaded.")
+
+    # Apply quality gate: skip title_implicit and noise queries
+    original_count = len(queries)
+    queries = [
+        q for q in queries
+        if q.get("method") != "title_implicit" and is_meaningful_query(q["query_text"])
+    ]
+    skipped = original_count - len(queries)
+    print(f"  {skipped} queries skipped (title_implicit or insufficient topical content).")
+    print(f"  {len(queries)} queries will be scored.")
 
     # Build index once before the query loop
     vectorizer, doc_matrix = build_index(docs)
