@@ -1,0 +1,6 @@
+inventory:
+- source: DirectOwners
+  items:
+  - id: ruihu@microsoft.com
+  - id: triciag@microsoft.com
+  isProduction: false
