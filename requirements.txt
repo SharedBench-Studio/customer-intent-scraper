@@ -1,9 +1,11 @@
-scrapy<2.11
-scrapy-playwright
-openai
 streamlit
 pandas
 plotly
 scikit-learn
 python-dotenv
-scrapy-poet
+openai
+
+# Scraping deps — install locally only, not needed for the dashboard
+# scrapy<2.11
+# scrapy-playwright
+# scrapy-poet
