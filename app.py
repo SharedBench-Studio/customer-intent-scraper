@@ -1,6 +1,6 @@
+import secrets
 import streamlit as st
 import pandas as pd
-import sqlite3
 import os
 import plotly.express as px
 import subprocess
@@ -9,6 +9,7 @@ from collections import Counter
 import re
 from dotenv import load_dotenv
 from text_utils import is_meaningful_query
+from db import get_db, query_replies, query_reply_stats, query_queries_df, query_retrievability_df
 
 load_dotenv()
 
@@ -34,9 +35,45 @@ if "is_admin" not in st.session_state:
 
 if _admin_password and not st.session_state.is_admin:
     entered = st.sidebar.text_input("Admin password", type="password", key="admin_pw_input")
-    if entered == _admin_password:
-        st.session_state.is_admin = True
-        st.rerun()
+    if st.sidebar.button("Unlock", key="admin_submit"):
+        if entered and secrets.compare_digest(entered, _admin_password):
+            st.session_state.is_admin = True
+            st.rerun()
+        else:
+            st.sidebar.error("Incorrect password.")
+
+def _run_with_logs(cmd: list, placeholder, success_msg: str, tail: int = 20) -> bool:
+    """Run cmd via Popen, stream stdout to placeholder. Returns True on success."""
+    full_logs = []
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            encoding='utf-8',
+            errors='replace'
+        )
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                full_logs.append(line)
+                placeholder.code("".join(full_logs[-tail:]), language="text")
+        if process.poll() == 0:
+            st.success(success_msg)
+            return True
+        else:
+            st.error(f"Process failed (exit code {process.poll()}).")
+            with st.expander("View Full Logs"):
+                st.code("".join(full_logs))
+            return False
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        return False
+
 
 # --- Sidebar: Scraper Management (admin only) ---
 if st.session_state.is_admin:
@@ -56,10 +93,7 @@ if st.session_state.is_admin:
         if st.button("Run Scraper Now"):
             st.info("Scraper started. Streaming logs below...")
             log_placeholder = st.empty()
-            full_logs = []
-
             try:
-                # Construct command
                 if scraper_type == "Tech Community":
                     cmd = [
                         sys.executable, "-m", "scrapy", "crawl", "techcommunity",
@@ -73,43 +107,9 @@ if st.session_state.is_admin:
                         "--subreddits", subreddits_input,
                         "--limit", str(limit_posts)
                     ]
-
-                # Run process with Popen for real-time output
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                    text=True,
-                    bufsize=1,  # Line buffered
-                    encoding='utf-8',
-                    errors='replace'
-                )
-
-                # Read output line by line
-                while True:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
-                    if line:
-                        full_logs.append(line)
-                        # We join the last 20 lines for the preview, but keep full logs
-                        log_preview = "".join(full_logs[-20:])
-                        log_placeholder.code(log_preview, language="text")
-
-                rc = process.poll()
-
-                if rc == 0:
-                    st.success("Scraper finished successfully!")
-                    # Clear cache to ensure new data is loaded
+                if _run_with_logs(cmd, log_placeholder, "Scraper finished successfully!"):
                     st.cache_data.clear()
                     st.rerun()
-                else:
-                    st.error(f"Scraper failed with return code {rc}.")
-
-                # Show full logs in an expander at the end
-                with st.expander("View Full Scraper Logs"):
-                    st.code("".join(full_logs))
-
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
@@ -140,48 +140,15 @@ if st.session_state.is_admin:
             limit_ai = st.number_input("Limit items to analyze (0 for all)", min_value=0, value=10, step=10)
 
             if st.button("Run AI Analysis"):
-                # Check env vars first
                 if not os.getenv("AZURE_OPENAI_API_KEY"):
                     st.error("Missing AZURE_OPENAI_API_KEY in .env file.")
                 else:
                     st.info("AI Analysis started. This may take a while...")
                     log_placeholder = st.empty()
-
-                    try:
-                        cmd = [
-                            sys.executable, "analyze_intent.py",
-                            "--limit", str(limit_ai)
-                        ]
-
-                        process = subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            bufsize=1,
-                            encoding='utf-8',
-                            errors='replace'
-                        )
-
-                        full_logs = []
-                        while True:
-                            line = process.stdout.readline()
-                            if not line and process.poll() is not None:
-                                break
-                            if line:
-                                full_logs.append(line)
-                                log_placeholder.code("".join(full_logs[-10:]), language="text")
-
-                        if process.poll() == 0:
-                            st.success("AI Analysis finished successfully!")
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error("AI Analysis failed.")
-                            st.code("".join(full_logs))
-
-                    except Exception as e:
-                        st.error(f"An error occurred: {e}")
+                    cmd = [sys.executable, "analyze_intent.py", "--limit", str(limit_ai)]
+                    if _run_with_logs(cmd, log_placeholder, "AI Analysis finished successfully!", tail=10):
+                        st.cache_data.clear()
+                        st.rerun()
 
 
 if st.sidebar.button("Refresh Data"):
@@ -192,21 +159,19 @@ if st.sidebar.button("Refresh Data"):
 @st.cache_data
 def load_data(ttl_hash=None):
     # ttl_hash is a dummy argument to force cache invalidation when the file changes
-    del ttl_hash 
+    del ttl_hash
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
-        
+
     try:
-        conn = sqlite3.connect(db_path)
-        query = "SELECT * FROM discussions"
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        
+        with get_db(db_path) as conn:
+            df = pd.read_sql_query("SELECT * FROM discussions", conn)
+
         # Convert date
         if "publish_date" in df.columns:
             df["publish_date"] = pd.to_datetime(df["publish_date"], errors='coerce', utc=True)
-            
+
         # Rename analysis columns to match expected format
         column_mapping = {
             "analysis_category": "category",
@@ -217,7 +182,7 @@ def load_data(ttl_hash=None):
             "analysis_cluster_id": "cluster_id"
         }
         df = df.rename(columns=column_mapping)
-        
+
         # Normalize sub_source to lowercase to merge duplicates
         if "sub_source" in df.columns:
             df["sub_source"] = df["sub_source"].str.lower()
@@ -227,23 +192,13 @@ def load_data(ttl_hash=None):
         st.error(f"Error loading database: {e}")
         return pd.DataFrame()
 
-def _query_replies(db_path, discussion_id):
-    conn = sqlite3.connect(db_path)
-    try:
-        return pd.read_sql_query(
-            "SELECT * FROM replies WHERE parent_id = ? ORDER BY publish_date",
-            conn, params=(discussion_id,)
-        )
-    finally:
-        conn.close()
-
 
 def load_replies(discussion_id):
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
     try:
-        return _query_replies(db_path, discussion_id)
+        return query_replies(db_path, discussion_id)
     except Exception as e:
         st.error(f"Error loading replies: {e}")
         return pd.DataFrame()
@@ -256,21 +211,11 @@ def load_reply_stats(ttl_hash=None):
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
-    conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql_query("""
-            SELECT parent_id,
-                   COUNT(*) as agg_reply_count,
-                   GROUP_CONCAT(content, ' ') as all_reply_text
-            FROM replies
-            GROUP BY parent_id
-        """, conn)
-        return df
+        return query_reply_stats(db_path)
     except Exception as e:
         st.error(f"Error loading reply stats: {e}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 
 @st.cache_data
@@ -280,22 +225,11 @@ def load_queries_df(ttl_hash=None):
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
-    conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql_query("""
-            SELECT q.id, q.query_text, q.method, q.product_area,
-                   q.created_at, d.title as source_title, d.url as source_url,
-                   d.thumbs_up_count as source_likes,
-                   d.reply_count as source_replies
-            FROM queries q
-            LEFT JOIN discussions d ON d.id = q.source_id
-        """, conn)
-        return df
+        return query_queries_df(db_path)
     except Exception as e:
         st.error(f"Error loading queries: {e}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 
 @st.cache_data
@@ -305,20 +239,11 @@ def load_retrievability_df(ttl_hash=None):
     db_path = "discussions.db"
     if not os.path.exists(db_path):
         return pd.DataFrame()
-    conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql_query("""
-            SELECT r.query_id, r.doc_path, r.doc_title, r.rank, r.score,
-                   q.query_text, q.product_area, q.method
-            FROM retrievability_results r
-            JOIN queries q ON q.id = r.query_id
-        """, conn)
-        return df
+        return query_retrievability_df(db_path)
     except Exception as e:
         st.error(f"Error loading retrievability results: {e}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 
 # Get the last modification time of the db to force cache invalidation if it changes

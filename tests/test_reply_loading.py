@@ -5,7 +5,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from app import _query_replies
+from db import query_replies as _query_replies
 from analyze_local import load_discussions_with_replies
 
 
