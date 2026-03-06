@@ -27,150 +27,161 @@ except Exception as e:
 
 st.title("Microsoft 365 Copilot Feedback Analysis")
 
-# --- Sidebar: Scraper Management ---
-st.sidebar.header("Scraper Management")
-with st.sidebar.expander("Run Scraper"):
-    scraper_type = st.selectbox("Select Scraper", ["Tech Community", "Reddit"])
-    
-    if scraper_type == "Tech Community":
-        default_urls = "https://techcommunity.microsoft.com/category/microsoft365copilot/discussions/microsoft365copilot, https://techcommunity.microsoft.com/category/microsoft365/discussions/admincenter"
-        urls_input = st.text_area("URLs to Scrape (comma separated)", value=default_urls, height=100)
-        max_pages = st.number_input("Max Pages per Board (0 for unlimited)", min_value=0, value=10, step=1, help="Limit the number of pages to scrape per board.")
-    else:
-        default_subreddits = "microsoft,microsoft365,Office365,sharepoint,teams"
-        subreddits_input = st.text_area("Subreddits (comma separated)", value=default_subreddits, height=100)
-        limit_posts = st.number_input("Limit Posts per Subreddit", min_value=10, value=50, step=10)
+# --- Admin auth ---
+_admin_password = os.getenv("ADMIN_PASSWORD", "")
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = _admin_password == ""  # always admin when no password set
 
-    if st.button("Run Scraper Now"):
-        st.info("Scraper started. Streaming logs below...")
-        log_placeholder = st.empty()
-        full_logs = []
-        
-        try:
-            # Construct command
-            if scraper_type == "Tech Community":
-                cmd = [
-                    sys.executable, "-m", "scrapy", "crawl", "techcommunity", 
-                    "-a", f"urls={urls_input}"
-                ]
-                if max_pages > 0:
-                    cmd.extend(["-a", f"max_pages={max_pages}"])
-            else:
-                cmd = [
-                    sys.executable, "scrape_reddit.py",
-                    "--subreddits", subreddits_input,
-                    "--limit", str(limit_posts)
-                ]
-            
-            # Run process with Popen for real-time output
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, # Merge stderr into stdout
-                text=True,
-                bufsize=1, # Line buffered
-                encoding='utf-8',
-                errors='replace'
-            )
-            
-            # Read output line by line
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    full_logs.append(line)
-                    # Update logs every few lines or just show the last 20 lines to avoid UI lag
-                    # We join the last 20 lines for the preview, but keep full logs
-                    log_preview = "".join(full_logs[-20:])
-                    log_placeholder.code(log_preview, language="text")
-            
-            rc = process.poll()
-            
-            if rc == 0:
-                st.success("Scraper finished successfully!")
-                # Clear cache to ensure new data is loaded
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(f"Scraper failed with return code {rc}.")
-            
-            # Show full logs in an expander at the end
-            with st.expander("View Full Scraper Logs"):
-                st.code("".join(full_logs))
-                
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+if _admin_password and not st.session_state.is_admin:
+    entered = st.sidebar.text_input("Admin password", type="password", key="admin_pw_input")
+    if entered == _admin_password:
+        st.session_state.is_admin = True
+        st.rerun()
 
-with st.sidebar.expander("Run Analysis"):
-    analysis_type = st.radio("Analysis Type", ["Local (Keyword)", "AI (Azure OpenAI)"])
-    
-    if analysis_type == "Local (Keyword)":
-        st.write("Fast, free, runs offline using keyword matching.")
-        if st.button("Run Local Analysis"):
-            st.info("Analysis started...")
+# --- Sidebar: Scraper Management (admin only) ---
+if st.session_state.is_admin:
+    st.sidebar.header("Scraper Management")
+    with st.sidebar.expander("Run Scraper"):
+        scraper_type = st.selectbox("Select Scraper", ["Tech Community", "Reddit"])
+
+        if scraper_type == "Tech Community":
+            default_urls = "https://techcommunity.microsoft.com/category/microsoft365copilot/discussions/microsoft365copilot, https://techcommunity.microsoft.com/category/microsoft365/discussions/admincenter"
+            urls_input = st.text_area("URLs to Scrape (comma separated)", value=default_urls, height=100)
+            max_pages = st.number_input("Max Pages per Board (0 for unlimited)", min_value=0, value=10, step=1, help="Limit the number of pages to scrape per board.")
+        else:
+            default_subreddits = "microsoft,microsoft365,Office365,sharepoint,teams"
+            subreddits_input = st.text_area("Subreddits (comma separated)", value=default_subreddits, height=100)
+            limit_posts = st.number_input("Limit Posts per Subreddit", min_value=10, value=50, step=10)
+
+        if st.button("Run Scraper Now"):
+            st.info("Scraper started. Streaming logs below...")
+            log_placeholder = st.empty()
+            full_logs = []
+
             try:
-                result = subprocess.run(
-                    [sys.executable, "analyze_local.py"],
-                    capture_output=True,
-                    text=True
+                # Construct command
+                if scraper_type == "Tech Community":
+                    cmd = [
+                        sys.executable, "-m", "scrapy", "crawl", "techcommunity",
+                        "-a", f"urls={urls_input}"
+                    ]
+                    if max_pages > 0:
+                        cmd.extend(["-a", f"max_pages={max_pages}"])
+                else:
+                    cmd = [
+                        sys.executable, "scrape_reddit.py",
+                        "--subreddits", subreddits_input,
+                        "--limit", str(limit_posts)
+                    ]
+
+                # Run process with Popen for real-time output
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    text=True,
+                    bufsize=1,  # Line buffered
+                    encoding='utf-8',
+                    errors='replace'
                 )
-                if result.returncode == 0:
-                    st.success("Analysis finished successfully!")
+
+                # Read output line by line
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        full_logs.append(line)
+                        # We join the last 20 lines for the preview, but keep full logs
+                        log_preview = "".join(full_logs[-20:])
+                        log_placeholder.code(log_preview, language="text")
+
+                rc = process.poll()
+
+                if rc == 0:
+                    st.success("Scraper finished successfully!")
+                    # Clear cache to ensure new data is loaded
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.error("Analysis failed.")
-                    st.code(result.stderr)
+                    st.error(f"Scraper failed with return code {rc}.")
+
+                # Show full logs in an expander at the end
+                with st.expander("View Full Scraper Logs"):
+                    st.code("".join(full_logs))
+
             except Exception as e:
                 st.error(f"An error occurred: {e}")
-    else:
-        st.write("Slower, costs Azure credits, but higher accuracy using GPT-4o.")
-        limit_ai = st.number_input("Limit items to analyze (0 for all)", min_value=0, value=10, step=10)
-        
-        if st.button("Run AI Analysis"):
-            # Check env vars first
-            if not os.getenv("AZURE_OPENAI_API_KEY"):
-                st.error("Missing AZURE_OPENAI_API_KEY in .env file.")
-            else:
-                st.info("AI Analysis started. This may take a while...")
-                log_placeholder = st.empty()
-                
+
+    with st.sidebar.expander("Run Analysis"):
+        analysis_type = st.radio("Analysis Type", ["Local (Keyword)", "AI (Azure OpenAI)"])
+
+        if analysis_type == "Local (Keyword)":
+            st.write("Fast, free, runs offline using keyword matching.")
+            if st.button("Run Local Analysis"):
+                st.info("Analysis started...")
                 try:
-                    cmd = [
-                        sys.executable, "analyze_intent.py",
-                        "--limit", str(limit_ai)
-                    ]
-                    
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                        encoding='utf-8',
-                        errors='replace'
+                    result = subprocess.run(
+                        [sys.executable, "analyze_local.py"],
+                        capture_output=True,
+                        text=True
                     )
-                    
-                    full_logs = []
-                    while True:
-                        line = process.stdout.readline()
-                        if not line and process.poll() is not None:
-                            break
-                        if line:
-                            full_logs.append(line)
-                            log_placeholder.code("".join(full_logs[-10:]), language="text")
-                            
-                    if process.poll() == 0:
-                        st.success("AI Analysis finished successfully!")
+                    if result.returncode == 0:
+                        st.success("Analysis finished successfully!")
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("AI Analysis failed.")
-                        st.code("".join(full_logs))
-                        
+                        st.error("Analysis failed.")
+                        st.code(result.stderr)
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+        else:
+            st.write("Slower, costs Azure credits, but higher accuracy using GPT-4o.")
+            limit_ai = st.number_input("Limit items to analyze (0 for all)", min_value=0, value=10, step=10)
+
+            if st.button("Run AI Analysis"):
+                # Check env vars first
+                if not os.getenv("AZURE_OPENAI_API_KEY"):
+                    st.error("Missing AZURE_OPENAI_API_KEY in .env file.")
+                else:
+                    st.info("AI Analysis started. This may take a while...")
+                    log_placeholder = st.empty()
+
+                    try:
+                        cmd = [
+                            sys.executable, "analyze_intent.py",
+                            "--limit", str(limit_ai)
+                        ]
+
+                        process = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            bufsize=1,
+                            encoding='utf-8',
+                            errors='replace'
+                        )
+
+                        full_logs = []
+                        while True:
+                            line = process.stdout.readline()
+                            if not line and process.poll() is not None:
+                                break
+                            if line:
+                                full_logs.append(line)
+                                log_placeholder.code("".join(full_logs[-10:]), language="text")
+
+                        if process.poll() == 0:
+                            st.success("AI Analysis finished successfully!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error("AI Analysis failed.")
+                            st.code("".join(full_logs))
+
+                    except Exception as e:
+                        st.error(f"An error occurred: {e}")
 
 
 if st.sidebar.button("Refresh Data"):
